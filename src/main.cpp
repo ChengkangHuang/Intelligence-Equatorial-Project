@@ -1,14 +1,95 @@
 #include <Arduino.h>
 #include <SPI.h>
+#include <BLE2902.h>
+#include <BLEUtils.h>
+#include <BLEDevice.h>
 #include <TinyGPS++.h>
 #include <Adafruit_Sensor.h>
 #include <Adafruit_HMC5883_U.h>
 
 // The TinyGPS++ object
 TinyGPSPlus gps;
-
 // The Compass object
 Adafruit_HMC5883_Unified compass = Adafruit_HMC5883_Unified(5883);
+// The BLE Device
+#define SERVICE_UUID        "6E400001-B5A3-F393-E0A9-E50E24DCCA9E"
+#define CHARACTERISTIC_UUID "6E400002-B5A3-F393-E0A9-E50E24DCCA9E"
+BLECharacteristic *pCharacteristic;
+bool deviceConnected = false;
+char BLEBuffer[32];
+
+// Server callback for BLE connection status
+class MyServerCallbacks: public BLEServerCallbacks
+{
+	void onConnect(BLEServer* pServer)
+	{
+		deviceConnected = true;
+		Serial.println("Connected");
+	}
+
+	void onDisconnect(BLEServer* pServer)
+	{
+		deviceConnected = false;
+		Serial.println("Disconnected");
+	}
+};
+
+// Characteristic callback for BLE data
+class MyCallbacks: public BLECharacteristicCallbacks
+{
+	void onWrite(BLECharacteristic *pCharacteristic)
+	{
+		std::string rxValue = pCharacteristic->getValue();
+
+		if (rxValue.length() > 0)
+		{
+			Serial.println("**********");
+			Serial.print("Received Value: ");
+			for (int i = 0; i < rxValue.length(); i++)
+			{
+				Serial.print(rxValue[i]);
+			}
+			Serial.println();
+			Serial.println("**********");
+		}
+	}
+};
+
+// Initialize the BLE device
+void BLESetup() {
+	BLEDevice::init("ESP32 BLE Device");
+	BLEServer *pServer = BLEDevice::createServer();
+	pServer->setCallbacks(new MyServerCallbacks());
+
+	BLEService *pService = pServer->createService(SERVICE_UUID);
+
+	pCharacteristic = pService->createCharacteristic(
+		CHARACTERISTIC_UUID,
+		BLECharacteristic::PROPERTY_READ |
+		BLECharacteristic::PROPERTY_WRITE |
+		BLECharacteristic::PROPERTY_NOTIFY
+	);
+	pCharacteristic->addDescriptor(new BLE2902());
+	pCharacteristic->setCallbacks(new MyCallbacks());
+
+	BLEDevice::startAdvertising();
+}
+
+// BLE Task
+void BLETask(void *parameter) {
+	for (;;) {
+		if (deviceConnected) {
+			memset(BLEBuffer, 0, sizeof(BLEBuffer));
+			memcpy(BLEBuffer, (char *)"Hello World!", sizeof(BLEBuffer));
+			pCharacteristic->setValue(BLEBuffer);
+			pCharacteristic->notify();
+			Serial.println("Sent Value:");
+			Serial.println(BLEBuffer);
+			Serial.println();
+		}
+		vTaskDelay(1000 / portTICK_PERIOD_MS);
+	}
+}
 
 // GPS Task
 void gpsTask(void *parameter)
@@ -98,10 +179,10 @@ void setup()
 {
 	// put your setup code here, to run once:
 	Serial.begin(9600);
-	xTaskCreatePinnedToCore(gpsTask, "gpsTask", 10000, NULL, 1, NULL, 0);
-	xTaskCreatePinnedToCore(compassTask, "compassTask", 10000, NULL, 1, NULL, 0);
-	// xTaskcreate(gpsTask, "gpsTask", 1024, NULL, 1, NULL);
-	// xTaskcreate(compassTask, "compassTask", 1024, NULL, 1, NULL);
+	BLESetup();
+	xTaskCreatePinnedToCore(BLETask, "BLETask", 10000, NULL, 1, NULL, 0);
+	xTaskCreatePinnedToCore(gpsTask, "gpsTask", 10000, NULL, 1, NULL, 1);
+	xTaskCreatePinnedToCore(compassTask, "compassTask", 10000, NULL, 1, NULL, 1);
 }
 
 void loop()
